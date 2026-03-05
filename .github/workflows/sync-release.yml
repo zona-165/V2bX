@@ -2,30 +2,32 @@ name: Sync Upstream Release
 
 on:
   schedule:
-    - cron: '0 */6 * * *'   # 每6小时检查一次
-  workflow_dispatch:          # 也可以手动触发
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Get latest upstream release
+      - name: Get latest upstream release info
         id: upstream
         run: |
           LATEST=$(curl -s https://api.github.com/repos/wyx2685/V2bX/releases/latest)
           TAG=$(echo $LATEST | jq -r '.tag_name')
+          BODY=$(echo $LATEST | jq -r '.body')
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Latest upstream tag: $TAG"
 
-      - name: Check if release exists in fork
+      - name: Check if release already exists
         id: check
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.upstream.outputs.tag }})
           echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "Release check status: $STATUS"
 
-      - name: Checkout code at upstream tag
+      - name: Checkout at upstream tag
         if: steps.check.outputs.status == '404'
         uses: actions/checkout@v4
         with:
@@ -42,15 +44,34 @@ jobs:
         if: steps.check.outputs.status == '404'
         run: |
           mkdir -p dist
-          GOOS=linux GOARCH=amd64 go build -o dist/V2bX-linux-amd64 ./cmd/...
-          GOOS=linux GOARCH=arm64 go build -o dist/V2bX-linux-arm64 ./cmd/...
-          GOOS=linux GOARCH=386   go build -o dist/V2bX-linux-386   ./cmd/...
+          platforms=("linux/amd64" "linux/arm64" "linux/386" "linux/arm")
+          for platform in "${platforms[@]}"; do
+            OS="${platform%/*}"
+            ARCH="${platform#*/}"
+            OUTPUT="dist/V2bX-${OS}-${ARCH}"
+            echo "Building $OUTPUT..."
+            GOOS=$OS GOARCH=$ARCH go build -o $OUTPUT ./cmd/...
+          done
+          ls -lh dist/
 
-      - name: Create Release
+      - name: Download upstream release assets
+        if: steps.check.outputs.status == '404'
+        run: |
+          ASSETS=$(curl -s https://api.github.com/repos/wyx2685/V2bX/releases/tags/${{ steps.upstream.outputs.tag }} | jq -r '.assets[].browser_download_url')
+          mkdir -p upstream_assets
+          for url in $ASSETS; do
+            echo "Downloading: $url"
+            curl -L -o "upstream_assets/$(basename $url)" "$url"
+          done
+          ls -lh upstream_assets/ || echo "No upstream assets"
+
+      - name: Create Release with assets
         if: steps.check.outputs.status == '404'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.upstream.outputs.tag }}
           name: ${{ steps.upstream.outputs.tag }}
-          files: dist/*
+          files: |
+            dist/*
+            upstream_assets/*
           token: ${{ secrets.GITHUB_TOKEN }}
