@@ -1,0 +1,56 @@
+name: Sync Upstream Release
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # 每6小时检查一次
+  workflow_dispatch:          # 也可以手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get latest upstream release
+        id: upstream
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/wyx2685/V2bX/releases/latest)
+          TAG=$(echo $LATEST | jq -r '.tag_name')
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Latest upstream tag: $TAG"
+
+      - name: Check if release exists in fork
+        id: check
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.upstream.outputs.tag }})
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+
+      - name: Checkout code at upstream tag
+        if: steps.check.outputs.status == '404'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.upstream.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        if: steps.check.outputs.status == '404'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build binaries
+        if: steps.check.outputs.status == '404'
+        run: |
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 go build -o dist/V2bX-linux-amd64 ./cmd/...
+          GOOS=linux GOARCH=arm64 go build -o dist/V2bX-linux-arm64 ./cmd/...
+          GOOS=linux GOARCH=386   go build -o dist/V2bX-linux-386   ./cmd/...
+
+      - name: Create Release
+        if: steps.check.outputs.status == '404'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.upstream.outputs.tag }}
+          name: ${{ steps.upstream.outputs.tag }}
+          files: dist/*
+          token: ${{ secrets.GITHUB_TOKEN }}
